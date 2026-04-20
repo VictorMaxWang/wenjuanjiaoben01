@@ -59,12 +59,18 @@ export interface LearnConfig {
   };
 }
 
-export interface AdapterConfig {
+export interface MockAdapterConfig {
   type: "mock";
   mock?: {
     scenario?: "default" | "captcha" | "unknown";
   };
 }
+
+export interface WjxAdapterConfig {
+  type: "wjx";
+}
+
+export type AdapterConfig = MockAdapterConfig | WjxAdapterConfig;
 
 export interface AppConfig {
   targetUrl: string;

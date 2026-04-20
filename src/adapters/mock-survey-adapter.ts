@@ -1,11 +1,11 @@
 import type { Page } from "playwright";
-import type { AdapterConfig, Identity, QuestionBankEntry, QuestionOption, QuestionSnapshot } from "../types.js";
+import type { Identity, MockAdapterConfig, QuestionBankEntry, QuestionOption, QuestionSnapshot } from "../types.js";
 import { normalizeQuestionText } from "../utils/text.js";
 import type { SurveyAdapter } from "./survey-adapter.js";
 
 interface MockAdapterOptions {
   targetUrl: string;
-  adapterConfig: AdapterConfig;
+  adapterConfig: MockAdapterConfig;
   page: Page;
 }
 

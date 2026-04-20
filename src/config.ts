@@ -9,16 +9,22 @@ const identitySchema = z.object({
   college: z.string().min(1)
 });
 
+const mockAdapterSchema = z.object({
+  type: z.literal("mock"),
+  mock: z
+    .object({
+      scenario: z.enum(["default", "captcha", "unknown"]).default("default")
+    })
+    .optional()
+});
+
+const wjxAdapterSchema = z.object({
+  type: z.literal("wjx")
+});
+
 const appConfigSchema = z.object({
   targetUrl: z.string().min(1),
-  adapter: z.object({
-    type: z.literal("mock"),
-    mock: z
-      .object({
-        scenario: z.enum(["default", "captcha", "unknown"]).default("default")
-      })
-      .optional()
-  }),
+  adapter: z.discriminatedUnion("type", [mockAdapterSchema, wjxAdapterSchema]),
   headless: z.boolean().default(false),
   bankFilePath: z.string().default("./question_bank.json"),
   artifactsDir: z.string().default("./run_logs"),
