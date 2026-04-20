@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mock Survey</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: linear-gradient(180deg, #eef4ff 0%, #f8fafc 100%);
+        color: #102033;
+      }
+
+      .page {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+
+      .panel {
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid rgba(16, 32, 51, 0.08);
+        border-radius: 18px;
+        box-shadow: 0 20px 40px rgba(39, 78, 140, 0.08);
+        padding: 24px;
+        margin-bottom: 20px;
+      }
+
+      .panel h1,
+      .panel h2 {
+        margin-top: 0;
+      }
+
+      .identity-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-weight: 600;
+      }
+
+      input[type="text"] {
+        border: 1px solid #c8d6ea;
+        border-radius: 10px;
+        min-height: 42px;
+        padding: 0 12px;
+        font-size: 15px;
+      }
+
+      .question-card {
+        border: 1px solid #d7e3f3;
+        border-radius: 14px;
+        padding: 18px;
+        margin-bottom: 16px;
+        background: #fcfdff;
+      }
+
+      .option-group {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .choice {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #f1f6fd;
+        cursor: pointer;
+      }
+
+      button {
+        min-height: 44px;
+        border: 0;
+        border-radius: 999px;
+        padding: 0 18px;
+        background: #1c64f2;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .captcha {
+        border: 1px dashed #d97706;
+        background: #fff7ed;
+      }
+
+      .result-card {
+        border: 1px solid #d2e6d8;
+        background: #f2fbf4;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 12px;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <h1>授权表单自动化演示页</h1>
+        <p>该页面用于验证 learn / execute 两种模式，不连接任何第三方平台。</p>
+      </section>
+
+      <section class="panel">
+        <div class="identity-grid">
+          <label for="name-input">
+            姓名
+            <input id="name-input" aria-label="姓名" type="text" />
+          </label>
+          <label for="student-id-input">
+            学号
+            <input id="student-id-input" aria-label="学号" type="text" />
+          </label>
+          <label for="college-input">
+            学院
+            <input id="college-input" aria-label="学院" type="text" />
+          </label>
+        </div>
+      </section>
+
+      <section id="survey-panel" class="panel">
+        <h2>问卷内容</h2>
+        <div id="question-list"></div>
+        <button id="submit-button" type="button">提交</button>
+      </section>
+
+      <section id="captcha-panel" class="panel captcha" data-testid="captcha-challenge" hidden>
+        <h2>人工确认</h2>
+        <p>这是一个模拟验证码场景。请点击下面的按钮表示人工处理完成。</p>
+        <button id="captcha-resolve-button" type="button">我已人工完成验证</button>
+      </section>
+
+      <section id="result-panel" class="panel" hidden>
+        <h2>结果页</h2>
+        <div id="result-list"></div>
+      </section>
+    </main>
+
+    <script>
+      const url = new URL(window.location.href);
+      const scenario = url.searchParams.get("scenario") || "default";
+      const seed = Number(url.searchParams.get("seed") || `${Date.now()}`);
+
+      function createRandom(seedValue) {
+        let state = seedValue % 2147483647;
+        if (state <= 0) {
+          state += 2147483646;
+        }
+
+        return () => {
+          state = (state * 16807) % 2147483647;
+          return (state - 1) / 2147483646;
+        };
+      }
+
+      const random = createRandom(seed);
+
+      const pool = [
+        {
+          id: "q-html",
+          type: "single",
+          text: "HTML 的标准缩写是？",
+          options: [
+            { value: "A", label: "HTML" },
+            { value: "B", label: "HTTP" },
+            { value: "C", label: "CSS" }
+          ],
+          correctAnswers: ["HTML"]
+        },
+        {
+          id: "q-framework",
+          type: "multiple",
+          text: "以下哪些属于前端框架？",
+          options: [
+            { value: "A", label: "React" },
+            { value: "B", label: "Vue" },
+            { value: "C", label: "Django" },
+            { value: "D", label: "Angular" }
+          ],
+          correctAnswers: ["React", "Vue", "Angular"]
+        },
+        {
+          id: "q-typescript",
+          type: "text",
+          text: "TypeScript 基于哪种语言扩展而来？",
+          options: [],
+          correctAnswers: ["JavaScript"]
+        },
+        {
+          id: "q-node",
+          type: "single",
+          text: "Node.js 常用来运行哪种语言？",
+          options: [
+            { value: "A", label: "JavaScript" },
+            { value: "B", label: "Python" },
+            { value: "C", label: "Go" }
+          ],
+          correctAnswers: ["JavaScript"]
+        },
+        {
+          id: "q-testing",
+          type: "multiple",
+          text: "以下哪些属于常见测试类型？",
+          options: [
+            { value: "A", label: "单元测试" },
+            { value: "B", label: "集成测试" },
+            { value: "C", label: "随机森林" },
+            { value: "D", label: "端到端测试" }
+          ],
+          correctAnswers: ["单元测试", "集成测试", "端到端测试"]
+        }
+      ];
+
+      if (scenario === "unknown") {
+        pool.unshift({
+          id: "q-unknown",
+          type: "single",
+          text: "这是一个题库中不存在的新题吗？",
+          options: [
+            { value: "A", label: "是" },
+            { value: "B", label: "否" }
+          ],
+          correctAnswers: ["是"]
+        });
+      }
+
+      function pickQuestions() {
+        const copy = [...pool];
+
+        if (scenario === "unknown") {
+          const [unknown, ...rest] = copy;
+          rest.sort(() => random() - 0.5);
+          return [unknown, ...rest.slice(0, 2)];
+        }
+
+        copy.sort(() => random() - 0.5);
+        return copy.slice(0, 3);
+      }
+
+      const activeQuestions = pickQuestions();
+      const surveyPanel = document.getElementById("survey-panel");
+      const questionList = document.getElementById("question-list");
+      const resultPanel = document.getElementById("result-panel");
+      const resultList = document.getElementById("result-list");
+      const captchaPanel = document.getElementById("captcha-panel");
+      let captchaResolved = false;
+
+      function renderQuestions() {
+        questionList.innerHTML = "";
+        activeQuestions.forEach((question) => {
+          const card = document.createElement("fieldset");
+          card.className = "question-card";
+          card.dataset.testid = "question-card";
+          card.dataset.questionId = question.id;
+          card.dataset.questionType = question.type;
+          card.dataset.required = "true";
+
+          const title = document.createElement("legend");
+          title.dataset.testid = "question-title";
+          title.textContent = question.text;
+          card.appendChild(title);
+
+          if (question.type === "text") {
+            const input = document.createElement("input");
+            input.type = "text";
+            input.setAttribute("aria-label", question.text);
+            card.appendChild(input);
+          } else {
+            const wrapper = document.createElement("div");
+            wrapper.className = "option-group";
+            question.options.forEach((option, index) => {
+              const label = document.createElement("label");
+              label.className = "choice";
+              label.dataset.testid = "option-label";
+              label.dataset.optionValue = option.value;
+
+              const input = document.createElement("input");
+              input.type = question.type === "single" ? "radio" : "checkbox";
+              input.name = question.id;
+              input.value = option.value;
+              input.setAttribute("aria-label", option.label);
+              input.id = `${question.id}-${index}`;
+
+              const span = document.createElement("span");
+              span.textContent = option.label;
+
+              label.appendChild(input);
+              label.appendChild(span);
+              wrapper.appendChild(label);
+            });
+            card.appendChild(wrapper);
+          }
+
+          questionList.appendChild(card);
+        });
+      }
+
+      function renderResults() {
+        resultList.innerHTML = "";
+
+        activeQuestions.forEach((question) => {
+          const card = document.createElement("article");
+          card.className = "result-card";
+          card.dataset.testid = "result-card";
+          card.dataset.questionType = question.type;
+
+          const title = document.createElement("h3");
+          title.dataset.testid = "result-question";
+          title.textContent = question.text;
+          card.appendChild(title);
+
+          const optionList = document.createElement("ul");
+          question.options.forEach((option) => {
+            const item = document.createElement("li");
+            item.dataset.testid = "result-option";
+            item.dataset.optionValue = option.value;
+            item.textContent = option.label;
+            optionList.appendChild(item);
+          });
+          card.appendChild(optionList);
+
+          const answer = document.createElement("p");
+          answer.dataset.testid = "result-correct-answer";
+          answer.textContent = question.correctAnswers.join(" | ");
+          card.appendChild(answer);
+
+          resultList.appendChild(card);
+        });
+      }
+
+      function submitSurvey() {
+        renderResults();
+        resultPanel.hidden = false;
+
+        if (scenario === "captcha" && !captchaResolved) {
+          captchaPanel.hidden = false;
+          return;
+        }
+
+        surveyPanel.hidden = true;
+      }
+
+      document.getElementById("submit-button").addEventListener("click", submitSurvey);
+      document.getElementById("captcha-resolve-button").addEventListener("click", () => {
+        captchaResolved = true;
+        captchaPanel.hidden = true;
+        surveyPanel.hidden = true;
+        resultPanel.hidden = false;
+      });
+
+      renderQuestions();
+    </script>
+  </body>
+</html>

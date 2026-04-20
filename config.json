@@ -1,0 +1,29 @@
+{
+  "targetUrl": "file:///C:/Users/12804/Desktop/%E9%97%AE%E5%8D%B7%E8%84%9A%E6%9C%AC/mock/mock-survey.html",
+  "adapter": {
+    "type": "mock",
+    "mock": {
+      "scenario": "default"
+    }
+  },
+  "headless": false,
+  "bankFilePath": "./question_bank.json",
+  "artifactsDir": "./run_logs",
+  "learn": {
+    "consecutiveKnownRuns": 2,
+    "maxAttempts": 10,
+    "testIdentity": {
+      "baseName": "测试账号",
+      "studentIdPrefix": "0000000",
+      "college": "软件学院"
+    }
+  },
+  "execute": {
+    "timePerQuestion": 2,
+    "identity": {
+      "name": "张三",
+      "studentId": "20260001",
+      "college": "软件学院"
+    }
+  }
+}
