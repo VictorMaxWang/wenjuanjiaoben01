@@ -92,7 +92,7 @@ export class SurveyCrawler {
     console.log("[learn] reached max attempts before convergence");
   }
 
-  /** 每轮 learn 结束后清 Cookie，便于下一轮模拟新设备会话（你已验证问卷星依赖 Cookie 的设备限制）。 */
+  /** learn 每轮结束后清空当前上下文的 Cookie，降低同一会话内多轮测试被平台按会话关联的几率。 */
   private async clearLearnBrowserIsolation(): Promise<void> {
     await this.session.context.clearCookies();
     console.log("[learn] cleared cookies before next attempt");
