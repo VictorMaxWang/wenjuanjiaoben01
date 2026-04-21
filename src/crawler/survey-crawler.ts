@@ -32,6 +32,19 @@ export class SurveyCrawler {
       await this.adapter.fillIdentity(identity);
 
       const questions = await this.adapter.extractQuestions();
+
+      if (questions.length === 0) {
+        const html = await this.adapter.page.content();
+        await this.persistLearnDebugArtifact("debug-no-questions.html", "debug-no-questions", html);
+        console.error(
+          "\x1b[31m\x1b[1m[ERROR] 未能抓取到任何考试题目！已保存当前页面 HTML 到 run_logs，请提供给 Cursor 进行 DOM 分析。\x1b[0m"
+        );
+        await waitForManualIntervention(
+          "未能抓取到任何考试题目，已保存 debug-no-questions.html。请检查适配器或页面后重试。"
+        );
+        return;
+      }
+
       const progress = await this.evaluateLearnProgress(attempt, questions);
       consecutiveKnownRuns = progress.allQuestionsKnown ? consecutiveKnownRuns + 1 : 0;
 
@@ -47,11 +60,30 @@ export class SurveyCrawler {
       await this.answerRandomly(questions);
       await this.adapter.submit();
 
+      if (await this.detectLearnSubmitBlocked()) {
+        const html = await this.adapter.page.content();
+        await this.persistLearnDebugArtifact("debug-submit-blocked.html", "debug-submit-blocked", html);
+        console.error(
+          "\x1b[31m\x1b[1m[ERROR] 提交被拦截（可能漏答或校验未通过）！已保存 HTML 到 run_logs/debug-submit-blocked.html，请检查。\x1b[0m"
+        );
+        await waitForManualIntervention(
+          "提交被拦截，已将页面保存为 debug-submit-blocked.html。请处理表单或适配器后重试。"
+        );
+        return;
+      }
+
       if (await this.adapter.detectCaptcha()) {
         await this.handleCaptcha();
       }
 
       const entries = await this.adapter.extractResultArtifacts();
+      if (entries.length === 0) {
+        const html = await this.adapter.page.content();
+        await this.persistLearnDebugArtifact("debug-empty-result.html", "debug-empty-result", html);
+        console.error(
+          "\x1b[31m\x1b[1m抓取题库失败！请检查 `run_logs/debug-empty-result.html` 的结构，并提供给 Cursor 进行解析器升级！\x1b[0m"
+        );
+      }
       await this.storage.upsertEntries(entries);
     }
 
@@ -110,9 +142,55 @@ export class SurveyCrawler {
     };
   }
 
+  private async persistLearnDebugArtifact(fileName: string, category: string, html: string): Promise<void> {
+    await fs.ensureDir(this.config.artifactsDir);
+    await fs.writeFile(path.join(this.config.artifactsDir, fileName), html, "utf-8");
+    await this.storage.saveRunArtifact({
+      category,
+      fileName: "page.html",
+      content: html
+    });
+  }
+
+  /**
+   * 提交后仍停留在答题页且出现校验提示时，视为提交被拦截（漏答、必填等）。
+   */
+  private async detectLearnSubmitBlocked(): Promise<boolean> {
+    const page = this.adapter.page;
+    await sleep(500);
+
+    const bodyText = (await page.locator("body").innerText().catch(() => "")) ?? "";
+
+    const looksLikeResult =
+      /正确答案|标准答案|参考答案|您的答[案]|得分|成绩|感谢您的?参与|提交成功|查看结果/i.test(bodyText) ||
+      /感谢您的?填写|问卷已提交/i.test(bodyText);
+    if (looksLikeResult) {
+      return false;
+    }
+
+    const validationCue =
+      /请完善|必填|不能为空|请选择|请回答|漏答|必须回答|还有.*未答|最少.*选|最多.*选|请选择.*项|请输入|格式不正确|未全部回答|尚有.*未/i;
+    if (validationCue.test(bodyText)) {
+      return true;
+    }
+
+    const errTip = page.locator(
+      '[class*="error"], [class*="err"], [class*="warn_tip"], .field_error, .error-message, #validate_tip, [id*="error"], [id*="tip"]'
+    );
+    if (await errTip.first().isVisible().catch(() => false)) {
+      if (await page.locator("#ctlNext").isVisible().catch(() => false)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private async evaluateLearnProgress(attempt: number, questions: QuestionSnapshot[]): Promise<LearnProgress> {
     const bank = await this.storage.loadBank();
-    const allQuestionsKnown = questions.every((question) => Boolean(bank.entries[question.normalizedText]));
+    // 空数组时 Array.prototype.every 恒为 true，会误判「已全部掌握」并在从未提交的情况下提前退出 learn
+    const allQuestionsKnown =
+      questions.length > 0 && questions.every((question) => Boolean(bank.entries[question.normalizedText]));
 
     return {
       attempt,

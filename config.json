@@ -7,8 +7,8 @@
   "bankFilePath": "./question_bank.json",
   "artifactsDir": "./run_logs",
   "learn": {
-    "consecutiveKnownRuns": 2,
-    "maxAttempts": 10,
+    "consecutiveKnownRuns": 3,
+    "maxAttempts": 50,
     "testIdentity": {
       "baseName": "测试账号",
       "studentIdPrefix": "0000000",

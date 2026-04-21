@@ -18,6 +18,14 @@ interface ResolvedOption {
 
 const CAPTCHA_TOKENS = ["captcha", "verify", "slider", "geetest", "yidun", "tcaptcha"] as const;
 const RESULT_CUE_PATTERN = /(正确答案|标准答案|参考答案|答案\s*[:：]|解析\s*[:：])/u;
+
+/** 旧版：.div_question；新版问卷星 joinnew/jqmobo：fieldset 内 .field.ui-field-contain（见 debug-no-questions.html） */
+const QUESTION_CONTAINER_SELECTOR =
+  '.div_question, #divQuestion .field.ui-field-contain, fieldset .field.ui-field-contain[data-role="fieldcontain"], form#form1 .field.ui-field-contain';
+
+/** learn 极速模式：跳过可见性/动画相关等待（仍依赖后续显式 waitForLoadState） */
+const FAST_CLICK = { force: true as const, noWaitAfter: true as const };
+const FAST_CHECK = { force: true as const, noWaitAfter: true as const };
 export class WjxAdapter implements SurveyAdapter {
   public readonly type = "wjx";
 
@@ -29,6 +37,14 @@ export class WjxAdapter implements SurveyAdapter {
 
   public async open(): Promise<void> {
     await this.page.goto(this.options.targetUrl, { waitUntil: "domcontentloaded" });
+    await this.page.waitForLoadState("load").catch(() => {});
+    // 问卷星题目多为异步插入；过早 extract 会得到 0 题，配合 evaluateLearnProgress 曾导致「假收敛」
+    // 短超时：无 .div_question 的页面（如纯结果/验证码 fixture）应快速继续
+    await this.page
+      .locator(QUESTION_CONTAINER_SELECTOR)
+      .first()
+      .waitFor({ state: "attached", timeout: 8_000 })
+      .catch(() => {});
   }
 
   public async fillIdentity(identity: Identity): Promise<void> {
@@ -52,12 +68,15 @@ export class WjxAdapter implements SurveyAdapter {
     }
 
     // 2. 专门处理“学院”单选题
-    const collegeContainer = this.page.locator(".div_question").filter({ hasText: "学院" }).first();
+    const collegeContainer = this.page
+      .locator(QUESTION_CONTAINER_SELECTOR)
+      .filter({ hasText: "学院" })
+      .first();
     if (await collegeContainer.isVisible().catch(() => false)) {
       // 放弃依赖特定 class，直接通过 getByText 精准文本匹配点击
-      const optionLabel = collegeContainer.getByText(identity.college).first();
+      const optionLabel = collegeContainer.getByText(identity.college, { exact: true }).first();
       if (await optionLabel.isVisible().catch(() => false)) {
-        await optionLabel.click();
+        await optionLabel.click(FAST_CLICK);
       }
     } else if (usableFields.length > 2) {
       await usableFields[2].fill(identity.college);
@@ -65,7 +84,7 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   public async extractQuestions(): Promise<QuestionSnapshot[]> {
-    const containers = await this.page.locator(".div_question").all();
+    const containers = await this.page.locator(QUESTION_CONTAINER_SELECTOR).all();
     const questions: QuestionSnapshot[] = [];
 
     for (const [index, container] of containers.entries()) {
@@ -132,7 +151,10 @@ export class WjxAdapter implements SurveyAdapter {
     }
 
     await button.scrollIntoViewIfNeeded();
-    await button.click();
+    await button.click(FAST_CLICK);
+    // 结果页解析依赖导航完成；无跳转时（校验失败/仅弹层）下面调用会较快失败并继续
+    await this.page.waitForLoadState("load", { timeout: 30_000 }).catch(() => {});
+    await this.page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
   }
 
   public async detectCaptcha(): Promise<boolean> {
@@ -209,18 +231,39 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   private async extractQuestionTitle(scope: Locator): Promise<string> {
-    const titleNode = scope.locator('[class*="div_title_question"]').first();
-    if ((await titleNode.count()) === 0) {
-      return "";
+    const legacy = scope.locator('[class*="div_title_question"]').first();
+    if ((await legacy.count()) > 0) {
+      const raw = (await legacy.textContent()) ?? "";
+      const cleaned = this.cleanQuestionTitle(raw);
+      if (cleaned) {
+        return cleaned;
+      }
     }
 
-    const rawText = (await titleNode.textContent()) ?? "";
-    return this.cleanQuestionTitle(rawText);
+    const topichtml = scope.locator(".field-label .topichtml").first();
+    if ((await topichtml.count()) > 0) {
+      const num = scope.locator(".field-label .topicnumber").first();
+      const numPart = (await num.count()) > 0 ? ((await num.textContent()) ?? "").trim() : "";
+      const body = ((await topichtml.textContent()) ?? "").trim();
+      const merged = numPart ? `${numPart}${body}` : body;
+      return this.cleanQuestionTitle(merged);
+    }
+
+    const fieldLabel = scope.locator(".field-label").first();
+    if ((await fieldLabel.count()) > 0) {
+      let raw = (await fieldLabel.textContent()) ?? "";
+      raw = raw.replace(/^\s*[*＊]\s*/u, "").trim();
+      return this.cleanQuestionTitle(raw);
+    }
+
+    return "";
   }
 
   private async extractFallbackTitle(scope: Locator): Promise<string> {
     const selectors = [
       '[class*="div_title_question"]',
+      ".field-label .topichtml",
+      ".topichtml",
       '[class*="question"]',
       '[class*="title"]',
       '[class*="topic"]',
@@ -254,7 +297,7 @@ export class WjxAdapter implements SurveyAdapter {
   private async extractChoiceInfo(
     scope: Locator
   ): Promise<{ type: QuestionSnapshot["type"]; options: QuestionOption[] } | null> {
-    const checkboxOptions = await this.extractChoiceOptions(scope, ".ui-checkbox");
+    const checkboxOptions = await this.buildOptionsFromGatheredRoots(scope, "multiple");
     if (checkboxOptions.length > 0) {
       return {
         type: "multiple",
@@ -262,7 +305,7 @@ export class WjxAdapter implements SurveyAdapter {
       };
     }
 
-    const radioOptions = await this.extractChoiceOptions(scope, ".ui-radio");
+    const radioOptions = await this.buildOptionsFromGatheredRoots(scope, "single");
     if (radioOptions.length > 0) {
       return {
         type: "single",
@@ -273,19 +316,120 @@ export class WjxAdapter implements SurveyAdapter {
     return null;
   }
 
-  private async extractChoiceOptions(scope: Locator, selector: string): Promise<QuestionOption[]> {
-    const roots = await scope.locator(selector).all();
+  /**
+   * 兼容问卷星多种 DOM：.ui-radio / .ui-checkbox、原生 input、label/li/td 包裹等。
+   */
+  private async gatherOptionRoots(scope: Locator, kind: "single" | "multiple"): Promise<Locator[]> {
+    const inputType = kind === "multiple" ? "checkbox" : "radio";
+    const inputSel = `input[type="${inputType}"]`;
+    const selectorSets =
+      kind === "multiple"
+        ? [
+            ".ui-checkbox",
+            `label:has(${inputSel})`,
+            `div:has(> ${inputSel})`,
+            `li:has(${inputSel})`,
+            `td:has(${inputSel})`,
+            `tr:has(${inputSel})`,
+            `a:has(${inputSel})`,
+            `[class*="option"]:has(${inputSel})`,
+            `[class*="check"]:has(${inputSel})`,
+            `[class*="choice"]:has(${inputSel})`
+          ]
+        : [
+            ".ui-radio",
+            `label:has(${inputSel})`,
+            `div:has(> ${inputSel})`,
+            `li:has(${inputSel})`,
+            `td:has(${inputSel})`,
+            `tr:has(${inputSel})`,
+            `a:has(${inputSel})`,
+            `[class*="option"]:has(${inputSel})`,
+            `[class*="radio"]:has(${inputSel})`,
+            `[class*="choice"]:has(${inputSel})`
+          ];
+
+    const roots: Locator[] = [];
+    const seenInputKeys = new Set<string>();
+
+    const rememberRoot = async (root: Locator, input: Locator): Promise<boolean> => {
+      if ((await input.count()) === 0) {
+        return false;
+      }
+      const key = await input
+        .evaluate((el: HTMLInputElement) => `${el.type}§${el.name}§${el.value}§${el.id ?? ""}`)
+        .catch(() => "");
+      if (!key || seenInputKeys.has(key)) {
+        return false;
+      }
+      seenInputKeys.add(key);
+      roots.push(root);
+      return true;
+    };
+
+    for (const sel of selectorSets) {
+      const nodes = await scope.locator(sel).all();
+      for (const node of nodes) {
+        if (!(await node.isVisible().catch(() => false))) {
+          continue;
+        }
+        const input = node.locator(inputSel).first();
+        await rememberRoot(node, input);
+      }
+    }
+
+    const bareInputs = await scope.locator(inputSel).all();
+    for (const input of bareInputs) {
+      const key = await input
+        .evaluate((el: HTMLInputElement) => `${el.type}§${el.name}§${el.value}§${el.id ?? ""}`)
+        .catch(() => "");
+      if (!key || seenInputKeys.has(key)) {
+        continue;
+      }
+      seenInputKeys.add(key);
+
+      const labelWrap = input.locator("xpath=ancestor::label[1]");
+      if ((await labelWrap.count()) > 0) {
+        roots.push(labelWrap);
+        continue;
+      }
+
+      const themed = input.locator(
+        'xpath=ancestor::*[contains(@class,"ui-radio") or contains(@class,"ui-checkbox") or contains(@class,"option") or contains(@class,"choice")][1]'
+      );
+      if ((await themed.count()) > 0) {
+        roots.push(themed);
+        continue;
+      }
+
+      roots.push(input.locator("xpath=.."));
+    }
+
+    return roots;
+  }
+
+  private async buildOptionsFromGatheredRoots(
+    scope: Locator,
+    kind: "single" | "multiple"
+  ): Promise<QuestionOption[]> {
+    const roots = await this.gatherOptionRoots(scope, kind);
+    const inputType = kind === "multiple" ? "checkbox" : "radio";
+    const inputSel = `input[type="${inputType}"]`;
     const options: QuestionOption[] = [];
     const seenLabels = new Set<string>();
 
     for (const [index, root] of roots.entries()) {
+      const input = root.locator(inputSel).first();
+      if ((await input.count()) === 0) {
+        continue;
+      }
+
       const label = await this.readOptionLabel(root);
       const normalizedLabel = this.normalizeOptionLabel(label);
       if (!normalizedLabel || seenLabels.has(normalizedLabel)) {
         continue;
       }
 
-      const input = root.locator('input[type="radio"], input[type="checkbox"]').first();
       const value =
         (await input.getAttribute("value").catch(() => null)) ??
         (await root.getAttribute("value")) ??
@@ -333,7 +477,7 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   private async extractStructuredResultArtifacts(): Promise<QuestionBankEntry[]> {
-    const containers = await this.page.locator(".div_question").all();
+    const containers = await this.page.locator(QUESTION_CONTAINER_SELECTOR).all();
     const entries: QuestionBankEntry[] = [];
 
     for (const container of containers) {
@@ -488,27 +632,37 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   private async resolveOptionsForQuestion(scope: Locator, type: QuestionSnapshot["type"]): Promise<ResolvedOption[]> {
-    const selector = type === "multiple" ? ".ui-checkbox" : ".ui-radio";
-    const roots = await scope.locator(selector).all();
+    const kind = type === "multiple" ? "multiple" : "single";
+    const inputType = type === "multiple" ? "checkbox" : "radio";
+    const inputSel = `input[type="${inputType}"]`;
+    const roots = await this.gatherOptionRoots(scope, kind);
     const resolvedOptions: ResolvedOption[] = [];
 
     for (const root of roots) {
+      const input = root.locator(inputSel).first();
+      if ((await input.count()) === 0) {
+        continue;
+      }
+
       const labelText = await this.readOptionLabel(root);
       const normalizedLabel = this.normalizeOptionLabel(labelText);
       if (!normalizedLabel) {
         continue;
       }
 
+      const value =
+        (await input.getAttribute("value").catch(() => null)) ??
+        (await root.getAttribute("value")) ??
+        (await root.getAttribute("data-value")) ??
+        "";
+
       resolvedOptions.push({
         option: {
-          value:
-            (await root.locator('input[type="radio"], input[type="checkbox"]').first().getAttribute("value").catch(() => null)) ??
-            (await root.getAttribute("value")) ??
-            "",
+          value,
           label: labelText
         },
         root,
-        input: root.locator('input[type="radio"], input[type="checkbox"]').first(),
+        input,
         label: root.locator("label").first(),
         normalizedLabel
       });
@@ -522,11 +676,11 @@ export class WjxAdapter implements SurveyAdapter {
       const alreadyChecked = await option.input.isChecked().catch(() => false);
       if (!alreadyChecked) {
         try {
-          await option.input.check();
+          await option.input.check({ noWaitAfter: true });
           return;
         } catch {
           try {
-            await option.input.check({ force: true });
+            await option.input.check(FAST_CHECK);
             return;
           } catch {
             // Fall through to label/root clicks.
@@ -538,11 +692,17 @@ export class WjxAdapter implements SurveyAdapter {
     }
 
     if ((await option.label.count()) > 0) {
-      await option.label.click();
+      await option.label.click(FAST_CLICK);
       return;
     }
 
-    await option.root.click();
+    const jqSkin = option.root.locator("a.jqradio, a.jqcheck").first();
+    if ((await jqSkin.count()) > 0) {
+      await jqSkin.click(FAST_CLICK);
+      return;
+    }
+
+    await option.root.click(FAST_CLICK);
   }
 
   private async findQuestionContainer(question: QuestionSnapshot): Promise<Locator | null> {
@@ -551,7 +711,7 @@ export class WjxAdapter implements SurveyAdapter {
       return byId;
     }
 
-    const containers = await this.page.locator(".div_question").all();
+    const containers = await this.page.locator(QUESTION_CONTAINER_SELECTOR).all();
     for (const container of containers) {
       const title = await this.extractQuestionTitle(container);
       if (title && normalizeQuestionText(title) === question.normalizedText) {
@@ -567,7 +727,7 @@ export class WjxAdapter implements SurveyAdapter {
       return null;
     }
 
-    const containers = await this.page.locator(".div_question").all();
+    const containers = await this.page.locator(QUESTION_CONTAINER_SELECTOR).all();
     for (const container of containers) {
       const identifiers = [
         await container.getAttribute("id"),
@@ -618,6 +778,14 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   private async readOptionLabel(root: Locator): Promise<string> {
+    const jqmoboChoiceLabel = root.locator("div.label").first();
+    if ((await jqmoboChoiceLabel.count()) > 0) {
+      const shortcut = this.cleanOptionLabel(((await jqmoboChoiceLabel.textContent()) ?? "").trim());
+      if (shortcut) {
+        return shortcut;
+      }
+    }
+
     const rawText = await root
       .evaluate((node) => {
         const localCandidates: string[] = [];
