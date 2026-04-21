@@ -23,9 +23,25 @@ const RESULT_CUE_PATTERN = /(正确答案|标准答案|参考答案|答案\s*[:�
 const QUESTION_CONTAINER_SELECTOR =
   '.div_question, #divQuestion .field.ui-field-contain, fieldset .field.ui-field-contain[data-role="fieldcontain"], form#form1 .field.ui-field-contain';
 
-/** learn 极速模式：跳过可见性/动画相关等待（仍依赖后续显式 waitForLoadState） */
-const FAST_CLICK = { force: true as const, noWaitAfter: true as const };
-const FAST_CHECK = { force: true as const, noWaitAfter: true as const };
+/** 原生 DOM 点击：不经 Playwright actionability / viewport，避免 learn 长卷「outside viewport」 */
+async function domClick(locator: Locator): Promise<void> {
+  await locator.evaluate((node) => {
+    (node as HTMLElement).click();
+  });
+}
+
+async function domFillControl(locator: Locator, value: string): Promise<void> {
+  await locator.evaluate(
+    (node, val) => {
+      const el = node as HTMLInputElement | HTMLTextAreaElement;
+      el.value = val;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    value
+  );
+}
+
 export class WjxAdapter implements SurveyAdapter {
   public readonly type = "wjx";
 
@@ -55,16 +71,17 @@ export class WjxAdapter implements SurveyAdapter {
     const usableFields: Locator[] = [];
 
     for (const field of fields) {
-      if ((await field.isVisible().catch(() => false)) && !(await field.isDisabled().catch(() => true))) {
+      const enabled = await field.evaluate((el) => !(el as HTMLInputElement | HTMLTextAreaElement).disabled).catch(() => false);
+      if (enabled) {
         usableFields.push(field);
       }
     }
 
     if (usableFields.length > 0) {
-      await usableFields[0].fill(identity.name);
+      await domFillControl(usableFields[0], identity.name);
     }
     if (usableFields.length > 1) {
-      await usableFields[1].fill(identity.studentId);
+      await domFillControl(usableFields[1], identity.studentId);
     }
 
     // 2. 专门处理“学院”单选题
@@ -72,14 +89,13 @@ export class WjxAdapter implements SurveyAdapter {
       .locator(QUESTION_CONTAINER_SELECTOR)
       .filter({ hasText: "学院" })
       .first();
-    if (await collegeContainer.isVisible().catch(() => false)) {
-      // 放弃依赖特定 class，直接通过 getByText 精准文本匹配点击
+    if ((await collegeContainer.count()) > 0) {
       const optionLabel = collegeContainer.getByText(identity.college, { exact: true }).first();
-      if (await optionLabel.isVisible().catch(() => false)) {
-        await optionLabel.click(FAST_CLICK);
+      if ((await optionLabel.count()) > 0) {
+        await domClick(optionLabel);
       }
     } else if (usableFields.length > 2) {
-      await usableFields[2].fill(identity.college);
+      await domFillControl(usableFields[2], identity.college);
     }
   }
 
@@ -88,10 +104,6 @@ export class WjxAdapter implements SurveyAdapter {
     const questions: QuestionSnapshot[] = [];
 
     for (const [index, container] of containers.entries()) {
-      if (!(await container.isVisible().catch(() => false))) {
-        continue;
-      }
-
       const snapshot = await this.extractQuestionSnapshot(container, index);
       if (snapshot) {
         // 【核心防御】过滤掉基础信息题，绝不能让它们混入题库或干扰答题节奏
@@ -145,13 +157,16 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   public async submit(): Promise<void> {
-    const button = this.page.locator("#ctlNext").first();
-    if ((await button.count()) === 0) {
+    const exists = await this.page.evaluate(
+      () => Boolean(document.querySelector("#ctlNext"))
+    );
+    if (!exists) {
       throw new Error('Submit button "#ctlNext" was not found.');
     }
 
-    await button.scrollIntoViewIfNeeded();
-    await button.click(FAST_CLICK);
+    await this.page.evaluate(() => {
+      document.querySelector<HTMLElement>("#ctlNext")?.click();
+    });
     // 结果页解析依赖导航完成；无跳转时（校验失败/仅弹层）下面调用会较快失败并继续
     await this.page.waitForLoadState("load", { timeout: 30_000 }).catch(() => {});
     await this.page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
@@ -672,37 +687,29 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   private async selectResolvedOption(option: ResolvedOption): Promise<void> {
+    const jqSkin = option.root.locator("a.jqradio, a.jqcheck").first();
+    if ((await jqSkin.count()) > 0) {
+      await domClick(jqSkin);
+      return;
+    }
+
     if ((await option.input.count()) > 0) {
-      const alreadyChecked = await option.input.isChecked().catch(() => false);
+      const alreadyChecked = await option.input
+        .evaluate((n) => (n as HTMLInputElement).checked)
+        .catch(() => false);
       if (!alreadyChecked) {
-        try {
-          await option.input.check({ noWaitAfter: true });
-          return;
-        } catch {
-          try {
-            await option.input.check(FAST_CHECK);
-            return;
-          } catch {
-            // Fall through to label/root clicks.
-          }
-        }
-      } else {
+        await domClick(option.input);
         return;
       }
+      return;
     }
 
     if ((await option.label.count()) > 0) {
-      await option.label.click(FAST_CLICK);
+      await domClick(option.label);
       return;
     }
 
-    const jqSkin = option.root.locator("a.jqradio, a.jqcheck").first();
-    if ((await jqSkin.count()) > 0) {
-      await jqSkin.click(FAST_CLICK);
-      return;
-    }
-
-    await option.root.click(FAST_CLICK);
+    await domClick(option.root);
   }
 
   private async findQuestionContainer(question: QuestionSnapshot): Promise<Locator | null> {

@@ -85,9 +85,17 @@ export class SurveyCrawler {
         );
       }
       await this.storage.upsertEntries(entries);
+
+      await this.clearLearnBrowserIsolation();
     }
 
     console.log("[learn] reached max attempts before convergence");
+  }
+
+  /** 每轮 learn 结束后清 Cookie，便于下一轮模拟新设备会话（你已验证问卷星依赖 Cookie 的设备限制）。 */
+  private async clearLearnBrowserIsolation(): Promise<void> {
+    await this.session.context.clearCookies();
+    console.log("[learn] cleared cookies before next attempt");
   }
 
   public async runExecutionMode(): Promise<ExecuteRunSummary> {

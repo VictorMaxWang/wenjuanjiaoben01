@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
-    "run:learn": "npm run dev -- learn -c ./config.json --headless",
+    "run:learn": "npm run dev -- learn -c ./config.json",
     "run:execute": "npm run dev -- execute -c ./config.json --name \"王振欢\" --student-id \"25130119\" --college \"信息工程学院、人工智能学院\" --time-per-question 1",
     "test": "vitest run",
     "test:watch": "vitest"
