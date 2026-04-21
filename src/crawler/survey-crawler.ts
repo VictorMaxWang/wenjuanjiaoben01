@@ -99,8 +99,12 @@ export class SurveyCrawler {
   }
 
   private buildTestIdentity(attempt: number): Identity {
+    // 将阿拉伯数字转换为中文，绕过纯汉字校验
+    const chineseNums = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+    const suffix = chineseNums[attempt] || "多";
+
     return {
-      name: `${this.config.learn.testIdentity.baseName}${attempt}`,
+      name: `${this.config.learn.testIdentity.baseName}${suffix}`,
       studentId: `${this.config.learn.testIdentity.studentIdPrefix}${attempt}`,
       college: this.config.learn.testIdentity.college
     };

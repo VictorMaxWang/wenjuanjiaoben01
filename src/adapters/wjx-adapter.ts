@@ -32,7 +32,10 @@ export class WjxAdapter implements SurveyAdapter {
   }
 
   public async fillIdentity(identity: Identity): Promise<void> {
-    const fields = await this.page.locator(".ui-input-text").all();
+    // 1. 处理文本输入框（填入姓名、学号）
+    const selector =
+      'input.ui-input-text, textarea.ui-input-text, .ui-input-text input[type="text"], .ui-input-text textarea';
+    const fields = await this.page.locator(selector).all();
     const usableFields: Locator[] = [];
 
     for (const field of fields) {
@@ -41,13 +44,24 @@ export class WjxAdapter implements SurveyAdapter {
       }
     }
 
-    if (usableFields.length < 3) {
-      throw new Error(`Expected at least 3 visible .ui-input-text fields, found ${usableFields.length}.`);
+    if (usableFields.length > 0) {
+      await usableFields[0].fill(identity.name);
+    }
+    if (usableFields.length > 1) {
+      await usableFields[1].fill(identity.studentId);
     }
 
-    await usableFields[0].fill(identity.name);
-    await usableFields[1].fill(identity.studentId);
-    await usableFields[2].fill(identity.college);
+    // 2. 专门处理“学院”单选题
+    const collegeContainer = this.page.locator(".div_question").filter({ hasText: "学院" }).first();
+    if (await collegeContainer.isVisible().catch(() => false)) {
+      // 放弃依赖特定 class，直接通过 getByText 精准文本匹配点击
+      const optionLabel = collegeContainer.getByText(identity.college).first();
+      if (await optionLabel.isVisible().catch(() => false)) {
+        await optionLabel.click();
+      }
+    } else if (usableFields.length > 2) {
+      await usableFields[2].fill(identity.college);
+    }
   }
 
   public async extractQuestions(): Promise<QuestionSnapshot[]> {
@@ -61,6 +75,10 @@ export class WjxAdapter implements SurveyAdapter {
 
       const snapshot = await this.extractQuestionSnapshot(container, index);
       if (snapshot) {
+        // 【核心防御】过滤掉基础信息题，绝不能让它们混入题库或干扰答题节奏
+        if (/姓名|学号|学院|班级|手机号/.test(snapshot.text)) {
+          continue;
+        }
         questions.push(snapshot);
       }
     }
